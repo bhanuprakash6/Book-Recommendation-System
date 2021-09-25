@@ -1,0 +1,124 @@
+from google.colab import drive
+drive.mount('/content/drive/')
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+ratings_path='/content/drive/MyDrive/Colab Notebooks/dataset/Book-Ratings.csv'
+books_path='/content/drive/MyDrive/Colab Notebooks/dataset/Books.csv'
+users_path='/content/drive/MyDrive/Colab Notebooks/dataset/Users.csv'
+books = pd.read_csv(books_path, sep=';', error_bad_lines=False, encoding="latin-1")
+books.columns = ['ISBN', 'bookTitle', 'bookAuthor', 'yearOfPublication', 'publisher', 'imageUrlS', 'imageUrlM', 'imageUrlL']
+users = pd.read_csv(users_path, sep=';', error_bad_lines=False, encoding="latin-1")
+users.columns = ['userID', 'Location', 'Age']
+ratings = pd.read_csv(ratings_path, sep=';', error_bad_lines=False, encoding="latin-1")
+ratings.columns = ['userID', 'ISBN', 'bookRating']
+
+print(ratings.shape)
+print(list(ratings.columns))
+
+plt.rc("font", size=15)
+ratings.bookRating.value_counts(sort=False).plot(kind='bar')
+plt.title('Rating Distribution\n')
+plt.xlabel('Rating')
+plt.ylabel('Count')
+plt.savefig('system1.png', bbox_inches='tight')
+plt.show()
+
+print(books.shape)
+print(list(books.columns))
+
+print(users.shape)
+print(list(users.columns))
+
+users.Age.hist(bins=[0, 10, 20, 30, 40, 50, 100])
+plt.title('Age Distribution\n')
+plt.xlabel('Age')
+plt.ylabel('Count')
+plt.savefig('system2.png', bbox_inches='tight')
+plt.show()
+
+## To ensure statistical significance, users with less than 200 ratings, and books with less than 100 ratings are excluded.
+
+counts1 = ratings['userID'].value_counts()
+ratings = ratings[ratings['userID'].isin(counts1[counts1 >= 200].index)]
+counts = ratings['bookRating'].value_counts()
+ratings = ratings[ratings['bookRating'].isin(counts[counts >= 100].index)]
+
+combine_book_rating = pd.merge(ratings, books, on='ISBN')
+columns = ['yearOfPublication', 'publisher', 'bookAuthor', 'imageUrlS', 'imageUrlM', 'imageUrlL']
+combine_book_rating = combine_book_rating.drop(columns, axis=1)
+combine_book_rating.head()
+
+We then group by book titles and create a new column for total rating count.
+
+combine_book_rating = combine_book_rating.dropna(axis = 0, subset = ['bookTitle'])
+
+book_ratingCount = (combine_book_rating.
+     groupby(by = ['bookTitle'])['bookRating'].
+     count().
+     reset_index().
+     rename(columns = {'bookRating': 'totalRatingCount'})
+     [['bookTitle', 'totalRatingCount']]
+    )
+book_ratingCount.head()
+
+
+We combine the rating data with the total rating count data, this gives us exactly what we need to find out which books are popular and filter out lesser-known books.
+
+rating_with_totalRatingCount = combine_book_rating.merge(book_ratingCount, left_on = 'bookTitle', right_on = 'bookTitle', how = 'left')
+rating_with_totalRatingCount.head()
+
+pd.set_option('display.float_format', lambda x: '%.3f' % x)
+print(book_ratingCount['totalRatingCount'].describe())
+
+The median book has been rated only once. Let’s look at the top of the distribution
+
+print(book_ratingCount['totalRatingCount'].quantile(np.arange(.9, 1, .01)))
+
+popularity_threshold = 50
+rating_popular_book = rating_with_totalRatingCount.query('totalRatingCount >= @popularity_threshold')
+rating_popular_book.head()
+
+rating_popular_book.shape
+
+## Filter to users in US and Canada only
+
+combined = rating_popular_book.merge(users, left_on = 'userID', right_on = 'userID', how = 'left')
+
+us_canada_user_rating = combined[combined['Location'].str.contains("usa|canada")]
+us_canada_user_rating=us_canada_user_rating.drop('Age', axis=1)
+us_canada_user_rating.head()
+
+## Implementing kNN
+We convert our table to a 2D matrix, and fill the missing values with zeros (since we will calculate distances between rating vectors). We then transform the values(ratings) of the matrix dataframe into a scipy sparse matrix for more efficient calculations.
+
+Finding the Nearest Neighbors
+We use unsupervised algorithms with sklearn.neighbors. The algorithm we use to compute the nearest neighbors is “brute”, and we specify “metric=cosine” so that the algorithm will calculate the cosine similarity between rating vectors. Finally, we fit the model.
+
+from scipy.sparse import csr_matrix
+us_canada_user_rating = us_canada_user_rating.drop_duplicates(['userID', 'bookTitle'])
+us_canada_user_rating_pivot = us_canada_user_rating.pivot(index = 'bookTitle', columns = 'userID', values = 'bookRating').fillna(0)
+us_canada_user_rating_matrix = csr_matrix(us_canada_user_rating_pivot.values)
+
+from sklearn.neighbors import NearestNeighbors
+
+
+model_knn = NearestNeighbors(metric = 'cosine', algorithm = 'brute')
+model_knn.fit(us_canada_user_rating_matrix)
+
+query_index = np.random.choice(us_canada_user_rating_pivot.shape[0])
+print(query_index)
+distances, indices = model_knn.kneighbors(us_canada_user_rating_pivot.iloc[query_index,:].values.reshape(1, -1), n_neighbors = 6)
+
+
+
+us_canada_user_rating_pivot.iloc[query_index,:].values.reshape(1,-1)
+
+us_canada_user_rating_pivot.index[query_index]
+
+for i in range(0, len(distances.flatten())):
+    if i == 0:
+        print('Recommendations for {0}:\n'.format(us_canada_user_rating_pivot.index[query_index]))
+    else:
+        print('{0}: {1}, with distance of {2}:'.format(i, us_canada_user_rating_pivot.index[indices.flatten()[i]], distances.flatten()[i]))
